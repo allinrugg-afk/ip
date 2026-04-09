@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Username Generator Advanced
-- Country-aware prefix (bukan hardcode ID)
-- Batch input (multiple IP)
-- Cache/history
-- Colored output
-- Export CSV
-- Retry otomatis
+IP to Username Generator v2.2 - Termux Edition
+- Loop mode permanen (tidak perlu exit → run lagi)
+- termux-clipboard-set untuk copy username
+- Batch input, cache, history, export CSV
+- Fallback chain: nevacloud → ip-api
 """
 
 import re, requests, sys, time, csv, os, subprocess
@@ -26,70 +24,28 @@ except ImportError:
         RESET_ALL = BRIGHT = ""
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-BASE_PREFIX    = "3c0cd4f02478e1e837de__cr.id"
-NEVA_URL       = "https://nevacloud.com/tools/check-ip/"
-IPAPI_URL      = "http://ip-api.com/json/{ip}?fields=status,regionName,city,as,message,countryCode"
-TIMEOUT        = 8
-MAX_RETRY      = 2
-HISTORY_FILE   = "lookup_history.csv"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─── CLIPBOARD (Termux-compatible) ───────────────────────────────────────────
-def copy_to_clipboard(text: str) -> bool:
-    """Copy text ke clipboard. Aman di Termux maupun non-Termux."""
-    if not text:
-        return False
-    # Coba termux-clipboard-set
-    try:
-        proc = subprocess.Popen(
-            ['termux-clipboard-set'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        proc.communicate(input=text.encode('utf-8'), timeout=3)
-        if proc.returncode == 0:
-            return True
-    except Exception:
-        pass
-    # Fallback: tulis ke file
-    try:
-        clip_file = os.path.join(os.path.expanduser("~"), ".termux_clipboard.txt")
-        with open(clip_file, 'w', encoding='utf-8') as f:
-            f.write(text)
-        print(c(Fore.YELLOW, f"  ⚠ Clipboard disimpan ke: {clip_file}"))
-    except Exception:
-        pass
-    return False
+BASE_PREFIX  = "876fa2cd825d29262ef0__cr.id"
+NEVA_URL     = "https://nevacloud.com/tools/check-ip/"
+IPAPI_URL    = "http://ip-api.com/json/{ip}?fields=status,regionName,city,as,message,countryCode"
+TIMEOUT      = 10
+MAX_RETRY    = 2
 # ─────────────────────────────────────────────────────────────────────────────
 
 ASN_RE = re.compile(r'AS(\d+)', re.IGNORECASE)
 
-# Urutan alternasi penting — pola spesifik (dengan digit setelah ::) harus lebih dulu
 _IP_PATTERN = re.compile(
     r'(?:'
-    r'(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}'               # IPv6 full 8 groups
-    r'|(?:[0-9a-fA-F]{1,4}:){1,6}(?::[0-9a-fA-F]{1,4}){1,6}'  # IPv6 compressed middle
-    r'|(?:[0-9a-fA-F]{1,4}:){1,7}:'                             # IPv6 trailing ::
-    r'|:(?::[0-9a-fA-F]{1,4}){1,7}'                             # IPv6 leading ::
-    r'|::'                                                        # bare ::
-    r'|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}'
-      r'(?:25[0-5]|2[0-4]\d|[01]?\d\d?)'                        # IPv4
+    r'(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}'
+    r'|(?:[0-9a-fA-F]{1,4}:){1,6}(?::[0-9a-fA-F]{1,4}){1,6}'
+    r'|(?:[0-9a-fA-F]{1,4}:){1,7}:'
+    r'|:(?::[0-9a-fA-F]{1,4}){1,7}'
+    r'|::'
+    r'|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)'
     r')'
 )
 
-def extract_ips(text: str) -> list:
-    """Extract semua IPv4 dan IPv6 dari text, preserve order, deduplicate."""
-    found, seen = [], set()
-    for m in _IP_PATTERN.finditer(text):
-        ip = m.group(0)
-        if ip not in seen:
-            seen.add(ip)
-            found.append(ip)
-    return found
-
-_cache: dict[str, dict] = {}   # ip → info dict
-_history: list[dict]    = []   # semua hasil sesi ini
+_cache:   dict = {}   # ip → info dict
+_history: list = []   # semua hasil sesi ini
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 def c(color: str, text: str) -> str:
@@ -107,6 +63,42 @@ def extract_asn_num(as_field: str) -> str:
     if m: return m.group(1)
     digs = re.findall(r"\d+", as_field)
     return digs[0] if digs else "0"
+
+def extract_ips(text: str) -> list:
+    found, seen = [], set()
+    for m in _IP_PATTERN.finditer(text):
+        ip = m.group(0)
+        if ip not in seen:
+            seen.add(ip)
+            found.append(ip)
+    return found
+
+# ─── CLIPBOARD (TERMUX) ───────────────────────────────────────────────────────
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text ke clipboard via termux-clipboard-set."""
+    if not text:
+        return False
+    try:
+        proc = subprocess.Popen(
+            ['termux-clipboard-set'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        proc.communicate(input=text.encode('utf-8'), timeout=5)
+        if proc.returncode == 0:
+            return True
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        pass
+    # Fallback: simpan ke file agar bisa dipaste manual
+    try:
+        clip_file = os.path.join(os.path.expanduser("~"), ".last_username.txt")
+        with open(clip_file, 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(c(Fore.YELLOW, f"  ⚠ Disimpan ke: {clip_file}  (cat ~/.last_username.txt)"))
+    except Exception:
+        print(c(Fore.YELLOW, f"  ⚠ Copy manual:\n  {text}"))
+    return False
 
 # ─── PARSERS ─────────────────────────────────────────────────────────────────
 def parse_nevacloud_html(html: str):
@@ -135,7 +127,8 @@ def parse_nevacloud_html(html: str):
             parts = re.split(r'[:\u2022\-–]+', ln, 1)
             if len(parts) > 1 and parts[1].strip():
                 val = parts[1].strip().upper()
-                if 2 <= len(val) <= 3: country_code = val
+                if 2 <= len(val) <= 3:
+                    country_code = val
 
     if not (region or city or as_field):
         return None
@@ -162,7 +155,7 @@ def lookup_ipapi(ip: str) -> dict:
             }
         return {"status": "fail", "message": j.get("message", "failed")}
     except Exception as e:
-        return {"status": "fail", "message": f"ipapi_error:{e}"}
+        return {"status": "fail", "message": f"ipapi_err:{e}"}
 
 def lookup_nevacloud(ip: str) -> dict:
     headers = {"User-Agent": "Mozilla/5.0 (compatible; ip-checker/2.0)"}
@@ -179,25 +172,24 @@ def lookup_nevacloud(ip: str) -> dict:
             return p2
         return {"status": "fail", "message": "nevacloud_parse_failed"}
     except Exception as e:
-        return {"status": "fail", "message": f"nevacloud_error:{e}"}
+        return {"status": "fail", "message": f"nevacloud_err:{e}"}
 
 def lookup(ip: str, retry: int = MAX_RETRY) -> dict:
-    """Lookup dengan cache + retry + fallback chain: nevacloud → ip-api."""
+    """Lookup dengan cache + retry + fallback: nevacloud → ip-api."""
     if ip in _cache:
         cached = _cache[ip].copy()
         cached["source"] = cached.get("source", "?") + " (cached)"
         return cached
 
     for attempt in range(1, retry + 2):
-        # primary: nevacloud
+        # Primary: nevacloud
         info = lookup_nevacloud(ip)
 
-        # jika nevacloud tidak dapat countryCode, enrichment via ip-api
+        # Enrichment: jika nevacloud OK tapi missing countryCode
         if info.get("status") == "success" and not info.get("countryCode"):
             enrich = lookup_ipapi(ip)
             if enrich.get("status") == "success":
                 info["countryCode"] = enrich.get("countryCode", "")
-                # fallback field jika nevacloud kurang lengkap
                 if not info.get("region") and enrich.get("region"):
                     info["region"] = enrich["region"]
                 if not info.get("city") and enrich.get("city"):
@@ -205,8 +197,8 @@ def lookup(ip: str, retry: int = MAX_RETRY) -> dict:
                 if not info.get("as") and enrich.get("as"):
                     info["as"] = enrich["as"]
 
+        # Fallback: langsung ip-api
         if info.get("status") != "success":
-            # fallback: ip-api langsung
             info = lookup_ipapi(ip)
 
         if info.get("status") == "success":
@@ -221,15 +213,10 @@ def lookup(ip: str, retry: int = MAX_RETRY) -> dict:
 
 # ─── USERNAME BUILDER ─────────────────────────────────────────────────────────
 def build_username(state: str, city: str, as_field: str, country_code: str = "id") -> str:
-    """
-    Format: deff67d0db8c72ca9f19__cr.<cc>;state.<state>;city.<city>;asn.<asn>
-    Country code menggantikan bagian setelah __cr.
-    """
     cc      = (country_code or "id").lower()
     state_s = sanitize(state)
     city_s  = sanitize(city)
     asn     = extract_asn_num(as_field)
-    # Ganti bagian __cr.xx di BASE_PREFIX dengan country code yang sesuai
     prefix  = re.sub(r'(__cr\.)[a-z]+$', rf'\g<1>{cc}', BASE_PREFIX)
     return f"{prefix};state.{state_s};city.{city_s};asn.{asn}"
 
@@ -240,24 +227,36 @@ def print_result(ip: str, info: dict, username: str):
     city   = info.get("city", "-")
     asf    = info.get("as", "-")
     src    = info.get("source", "?")
-
-    flag = "🇮🇩" if cc == "ID" else ("🌐" if not cc else f"[{cc}]")
+    flag   = "🇮🇩" if cc == "ID" else ("🌐" if not cc else f"[{cc}]")
 
     print(c(Fore.CYAN,    f"\n  IP       : {ip}"))
-    print(c(Fore.WHITE,   f"  Country  : {flag} {cc}  (→ prefix: __cr.{cc.lower()})"))
+    print(c(Fore.WHITE,   f"  Country  : {flag} {cc}  (→ __cr.{cc.lower()})"))
     print(c(Fore.WHITE,   f"  Region   : {region}"))
     print(c(Fore.WHITE,   f"  City     : {city}"))
     print(c(Fore.WHITE,   f"  AS       : {asf}"))
     print(c(Fore.MAGENTA, f"  Source   : {src}"))
     print(c(Fore.GREEN, Style.BRIGHT + f"\n  ✔ Username: {username}"))
 
-def print_batch_summary(results: list[tuple[str, str]]):
+    ok = copy_to_clipboard(username)
+    if ok:
+        print(c(Fore.GREEN, "  (copied to clipboard ✔)"))
+
+def print_batch_summary(results: list):
     print(c(Fore.CYAN, "\n─── BATCH SUMMARY ─────────────────────────────────"))
     for ip, uname in results:
         status = c(Fore.GREEN, "✔") if uname else c(Fore.RED, "✗")
         print(f"  {status} {ip:<18} → {uname or 'FAILED'}")
     print(c(Fore.CYAN, "────────────────────────────────────────────────────"))
-    print(c(Fore.YELLOW, f"  Last username copied to clipboard."))
+
+# ─── HISTORY ─────────────────────────────────────────────────────────────────
+def print_history():
+    if not _history:
+        print(c(Fore.YELLOW, "  Belum ada history."))
+        return
+    print(c(Fore.CYAN, "\n─── HISTORY ────────────────────────────────────────"))
+    for i, h in enumerate(_history, 1):
+        print(f"  {i:>3}. [{h['timestamp']}] {h['ip']:<18} [{h['countryCode']}] → {h['username']}")
+    print(c(Fore.CYAN, "────────────────────────────────────────────────────"))
 
 # ─── EXPORT ──────────────────────────────────────────────────────────────────
 def export_history():
@@ -272,11 +271,9 @@ def export_history():
     print(c(Fore.GREEN, f"  ✔ Exported {len(_history)} entries → {fname}"))
 
 # ─── PROCESS IP(S) ───────────────────────────────────────────────────────────
-def process_ips(raw: str) -> list[tuple[str, str]]:
-    """Extract semua IP (v4 & v6) dari input, lookup, return list (ip, username)."""
+def process_ips(raw: str) -> list:
     ips = extract_ips(raw)
     if not ips:
-        # coba treat seluruh input sebagai satu IP
         candidate = raw.strip()
         if candidate:
             print(c(Fore.RED, f"  ✗ '{candidate}' bukan IP valid."))
@@ -311,70 +308,66 @@ def process_ips(raw: str) -> list[tuple[str, str]]:
 
     return results
 
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
+# ─── HELP ────────────────────────────────────────────────────────────────────
 def print_help():
     print(c(Fore.CYAN, """
   PERINTAH TERSEDIA:
-    <ip>          → lookup satu IP
-    <ip1,ip2,...> → lookup batch IP
-    export        → export history ke CSV
-    history       → tampilkan history sesi ini
-    clear         → bersihkan cache
-    help          → tampilkan ini
-    exit / q      → keluar
+    <ip>           → lookup satu IP
+    <ip1 ip2 ...>  → lookup batch (pisah spasi/koma)
+    history        → tampilkan history sesi ini
+    export         → export history ke CSV
+    clear          → bersihkan cache
+    help           → tampilkan ini
+    exit / q       → keluar
 """))
 
-def print_history():
-    if not _history:
-        print(c(Fore.YELLOW, "  Belum ada history."))
-        return
-    print(c(Fore.CYAN, "\n─── HISTORY ────────────────────────────────────────"))
-    for i, h in enumerate(_history, 1):
-        print(f"  {i:>3}. [{h['timestamp']}] {h['ip']:<18} [{h['countryCode']}] → {h['username']}")
-    print(c(Fore.CYAN, "────────────────────────────────────────────────────"))
-
+# ─── MAIN LOOP ───────────────────────────────────────────────────────────────
 def main():
     print(c(Fore.CYAN, Style.BRIGHT + """
 ╔══════════════════════════════════════════════════════╗
-║          Username Generator  ★  Advanced v2.0        ║
-║   Country-aware · Batch · Cache · Export CSV         ║
+║    IP to Username Generator  ★  Termux v2.2          ║
+║    Loop Mode · Cache · Batch · Export CSV            ║
 ╚══════════════════════════════════════════════════════╝"""))
-    print(c(Fore.WHITE, "  Ketik IP (atau banyak IP dipisah koma/spasi), 'help', atau 'exit'\n"))
+    print(c(Fore.WHITE, "  Ketik IP (satu atau banyak), 'help', atau 'exit'\n"))
 
-    try:
-        while True:
+    while True:
+        try:
             raw = input(c(Fore.YELLOW, "  ❯ ")).strip()
-            if not raw:
-                continue
+        except EOFError:
+            # Kalau di-pipe input habis, langsung selesai
+            print(c(Fore.YELLOW, "\n  EOF. Bye!"))
+            break
+        except KeyboardInterrupt:
+            print(c(Fore.YELLOW, "\n\n  Interrupted. Bye!"))
+            break
 
-            cmd = raw.lower()
-            if cmd in {"exit", "quit", "q"}:
-                print(c(Fore.CYAN, "\n  Bye! Sampai jumpa."))
-                break
-            elif cmd == "help":
-                print_help()
-            elif cmd == "history":
-                print_history()
-            elif cmd == "export":
-                export_history()
-            elif cmd == "clear":
-                _cache.clear()
-                print(c(Fore.GREEN, "  Cache dibersihkan."))
-            else:
-                results = process_ips(raw)
-                if len(results) > 1:
-                    print_batch_summary(results)
-                    valid = [u for _, u in results if u]
-                    if valid:
-                        if copy_to_clipboard(valid[-1]):
-                            print(c(Fore.GREEN, "  ✔ copied to clipboard."))
-                elif results and results[0][1]:
-                    if copy_to_clipboard(results[0][1]):
-                        print(c(Fore.GREEN, "  ✔ copied to clipboard."))
+        if not raw:
+            continue
 
-    except KeyboardInterrupt:
-        print(c(Fore.YELLOW, "\n\n  Interrupted. Bye!"))
-
+        cmd = raw.lower()
+        if cmd in {"exit", "quit", "q"}:
+            print(c(Fore.CYAN, "\n  Bye! Sampai jumpa."))
+            break
+        elif cmd == "help":
+            print_help()
+        elif cmd == "history":
+            print_history()
+        elif cmd == "export":
+            export_history()
+        elif cmd == "clear":
+            _cache.clear()
+            print(c(Fore.GREEN, "  Cache dibersihkan."))
+        else:
+            results = process_ips(raw)
+            if len(results) > 1:
+                print_batch_summary(results)
+                # Copy username terakhir yang valid
+                valid = [u for _, u in results if u]
+                if valid:
+                    copy_to_clipboard(valid[-1])
+            elif results and results[0][1]:
+                # Single IP sudah di-copy di print_result
+                pass
 
 if __name__ == "__main__":
     main()
