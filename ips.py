@@ -8,7 +8,7 @@ IP to Username Generator v2.2 - Termux Edition
 - Fallback chain: nevacloud → ip-api
 """
 
-import re, requests, sys, time, csv, os, subprocess
+import re, requests, sys, time, csv, os, subprocess, shutil
 from datetime import datetime
 from bs4 import BeautifulSoup
 
@@ -24,7 +24,7 @@ except ImportError:
         RESET_ALL = BRIGHT = ""
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-BASE_PREFIX  = "876fa2cd825d29262ef0__cr.id"
+BASE_PREFIX  = "3c0cd4f02478e1e837de__cr.id"
 NEVA_URL     = "https://nevacloud.com/tools/check-ip/"
 IPAPI_URL    = "http://ip-api.com/json/{ip}?fields=status,regionName,city,as,message,countryCode"
 TIMEOUT      = 10
@@ -74,30 +74,44 @@ def extract_ips(text: str) -> list:
     return found
 
 # ─── CLIPBOARD (TERMUX) ───────────────────────────────────────────────────────
+_HAS_TERMUX_CLIP: bool | None = None  # cache hasil cek, None = belum dicek
+
 def copy_to_clipboard(text: str) -> bool:
-    """Copy text ke clipboard via termux-clipboard-set."""
+    """Copy text ke clipboard.
+    - Cek sekali apakah termux-clipboard-set ada (shutil.which, instant).
+    - Kalau ada → pakai subprocess.
+    - Kalau tidak ada → langsung tulis ke ~/.last_username.txt tanpa delay.
+    """
+    global _HAS_TERMUX_CLIP
     if not text:
         return False
+
+    # Cek ketersediaan sekali saja (tidak perlu spawn proses)
+    if _HAS_TERMUX_CLIP is None:
+        _HAS_TERMUX_CLIP = shutil.which('termux-clipboard-set') is not None
+
+    if _HAS_TERMUX_CLIP:
+        try:
+            proc = subprocess.Popen(
+                ['termux-clipboard-set'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            proc.communicate(input=text.encode('utf-8'), timeout=3)
+            if proc.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            _HAS_TERMUX_CLIP = False  # tandai tidak bekerja
+
+    # Fallback instan: tulis ke file
+    clip_file = os.path.join(os.path.expanduser("~"), ".last_username.txt")
     try:
-        proc = subprocess.Popen(
-            ['termux-clipboard-set'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        proc.communicate(input=text.encode('utf-8'), timeout=5)
-        if proc.returncode == 0:
-            return True
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        pass
-    # Fallback: simpan ke file agar bisa dipaste manual
-    try:
-        clip_file = os.path.join(os.path.expanduser("~"), ".last_username.txt")
         with open(clip_file, 'w', encoding='utf-8') as f:
             f.write(text)
-        print(c(Fore.YELLOW, f"  ⚠ Disimpan ke: {clip_file}  (cat ~/.last_username.txt)"))
+        print(c(Fore.YELLOW, f"  💾 Disimpan → cat ~/.last_username.txt"))
     except Exception:
-        print(c(Fore.YELLOW, f"  ⚠ Copy manual:\n  {text}"))
+        print(c(Fore.YELLOW, f"  ⚠ Copy manual: {text}"))
     return False
 
 # ─── PARSERS ─────────────────────────────────────────────────────────────────
