@@ -24,7 +24,7 @@ except ImportError:
         RESET_ALL = BRIGHT = ""
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-BASE_PREFIX  = "b923264838c9f9016a12__cr.id"
+BASE_PREFIX  = "26ff3d1d23e8ea20a48d__cr.id"
 NEVA_URL     = "https://nevacloud.com/tools/check-ip/"
 IPAPI_URL    = "http://ip-api.com/json/{ip}?fields=status,regionName,city,as,message,countryCode"
 TIMEOUT      = 10
